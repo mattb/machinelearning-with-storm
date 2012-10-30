@@ -18,4 +18,10 @@ libraryDependencies += "org.jsoup" % "jsoup" % "1.6.3"
 
 libraryDependencies += "org.scalaz" %% "scalaz-core" % "6.0.4"
 
+libraryDependencies += "redis.clients" % "jedis" % "2.1.0"
+
+libraryDependencies += "org.apache.commons" % "commons-lang3" % "3.1"
+
 assemblySettings
+
+net.virtualvoid.sbt.graph.Plugin.graphSettings
