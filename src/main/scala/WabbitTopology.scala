@@ -101,7 +101,7 @@ class Collocations extends StormBolt(outputFields = List()) {
   var count = 0
 
   setup { 
-    r = new Jedis("localhost", 6379) 
+    r = new Jedis("54.242.164.168", 6379) 
     model = new TokenizedLM(tokenizerFactory, 2)
   }
 
@@ -133,7 +133,7 @@ class Collocise extends StormBolt(outputFields = List("example")) {
   var collocations = Set[String]()
   var r: Jedis = _
   setup { 
-    r = new Jedis("localhost", 6379) 
+    r = new Jedis("54.242.164.168", 6379) 
     loadCollocations
   }
 
@@ -158,8 +158,42 @@ class Collocise extends StormBolt(outputFields = List("example")) {
   def execute(t: Tuple) = t matchSeq {
     case Seq(example: Example) => using anchor t emit example.copy(tokens=collocise(example.tokens))
     case _ => { 
-      println("Reloading collocations")
       loadCollocations
+    }
+    t ack
+  }
+}
+
+class RemoveRareWords extends StormBolt(outputFields = List("example")) {
+  var rarewords: LoadingCache[String, java.lang.Boolean] = _
+  var r: Jedis = _
+  setup { 
+    r = new Jedis("54.242.164.168", 6379) 
+    rarewords = CacheBuilder.newBuilder
+      .expireAfterWrite(60, java.util.concurrent.TimeUnit.SECONDS)
+      .maximumSize(1000000)
+      .build(new CacheLoader[String, java.lang.Boolean] {
+        override def load(word: String): java.lang.Boolean = {
+          val score = r.zscore("frequency:term", word)
+          if(score == null) {
+            true
+          } else if(score > 5) {
+            false
+          } else {
+            true
+          }
+        }
+      })
+  }
+
+  def remove_rarewords(words: List[String]) = {
+    words.filter { word => !rarewords.get(word) }
+  }
+
+  def execute(t: Tuple) = t matchSeq {
+    case Seq(example: Example) => using anchor t emit example.copy(tokens=remove_rarewords(example.tokens))
+    case _ => { 
+      //tick
     }
     t ack
   }
@@ -167,10 +201,28 @@ class Collocise extends StormBolt(outputFields = List("example")) {
 
 class TermFrequency extends StormBolt(outputFields = List()) {
   var r: Jedis = _
-  setup { r = new Jedis("localhost", 6379) }
+  setup { r = new Jedis("54.242.164.168", 6379) }
   def execute(t: Tuple) = t matchSeq {
     case Seq(example: Example) => example.tokens.groupBy(t => t).foreach { case(t, ts) => 
       r.zincrby("frequency:term", ts.size, t)
+    }
+    case _ => { // tick
+    }
+    t ack
+  }
+}
+
+class Trainer extends StormBolt(outputFields = List("vwdata")) {
+  var r: Jedis = _
+  setup { r = new Jedis("54.242.164.168", 6379) }
+  def execute(t: Tuple) = t matchSeq {
+    case Seq(example: Example) => {
+      val encoded = example.tokens.groupBy(token => token).map {
+        case (t, ts) => t + ":" + ts.size
+      }
+      val output = List("'" + example.id + "|") ++ encoded
+      using anchor t emit output.mkString(" ")
+      r.publish("vw", output.mkString(" "))
     }
     case _ => { // tick
     }
@@ -182,18 +234,22 @@ object WabbitTopology {
   def main(args: Array[String]) = {
     val builder = new TopologyBuilder
 
-    builder.setSpout("source", new RedisPubSubSpout("localhost", 6379, "text"), 1)
-    builder.setBolt("parse", new ParseJson, 3).shuffleGrouping("source")
-    builder.setBolt("lemmatise", new LemmatiseExample, 3).shuffleGrouping("parse")
-    builder.setBolt("termfreq", new TermFrequency, 3).shuffleGrouping("lemmatise")
-    builder.setBolt("collocations", new Collocations, 1).shuffleGrouping("lemmatise")
-    builder.setBolt("collocise", new Collocise, 3).shuffleGrouping("lemmatise")
+    builder.setSpout("source", new RedisPubSubSpout("54.242.164.168", 6379, "text"), 1)
+    builder.setBolt("parse", new ParseJson, 2).shuffleGrouping("source")
+    builder.setBolt("lemmatise", new LemmatiseExample, 2).shuffleGrouping("parse")
+    builder.setBolt("collocations", new Collocations, 2).shuffleGrouping("lemmatise")
+    builder.setBolt("collocise", new Collocise, 2).shuffleGrouping("lemmatise")
+    builder.setBolt("termfreq", new TermFrequency, 2).shuffleGrouping("collocise")
+    builder.setBolt("rarewords", new RemoveRareWords, 2).shuffleGrouping("collocise")
+    builder.setBolt("trainer", new Trainer, 1).shuffleGrouping("rarewords")
 
     val conf = new Config
+    conf.setNumWorkers(20);
+    conf.setMaxSpoutPending(5000);
     conf.setDebug(true)
     conf.put(Config.TOPOLOGY_TICK_TUPLE_FREQ_SECS, new java.lang.Integer(60));
 
-    val cluster = new LocalCluster
-    cluster.submitTopology("learning", conf, builder.createTopology)
+    //val cluster = new LocalCluster
+    backtype.storm.StormSubmitter.submitTopology("learning", conf, builder.createTopology)
   }
 }

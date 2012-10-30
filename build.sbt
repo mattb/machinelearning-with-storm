@@ -8,6 +8,8 @@ resolvers += "Clojars" at "http://clojars.org/repo"
 
 resolvers += "Sonatype Snapshots" at "https://oss.sonatype.org/content/repositories/snapshots"
 
+libraryDependencies += "storm" % "storm" % "0.8.0" % "provided"
+
 libraryDependencies += "com.github.velvia" %% "scala-storm" % "0.2.2-SNAPSHOT"
 
 libraryDependencies += "com.fasterxml.jackson.core" % "jackson-databind" % "2.0.6"
@@ -24,4 +26,18 @@ libraryDependencies += "org.apache.commons" % "commons-lang3" % "3.1"
 
 assemblySettings
 
+mainClass in assembly := Some("WabbitTopology")
+
 net.virtualvoid.sbt.graph.Plugin.graphSettings
+
+mergeStrategy in assembly <<= (mergeStrategy in assembly) { (old) =>
+  {
+    case PathList("javax", "servlet", xs @ _*) => MergeStrategy.first
+    case PathList("project.clj") => MergeStrategy.first
+    case x => old(x)
+  }
+}
+
+excludedJars in assembly <<= (fullClasspath in assembly) map { cp => 
+  cp filter {_.data.getName == "storm-0.8.0.jar"}
+}
