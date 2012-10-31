@@ -24,6 +24,8 @@ libraryDependencies += "redis.clients" % "jedis" % "2.1.0"
 
 libraryDependencies += "org.apache.commons" % "commons-lang3" % "3.1"
 
+libraryDependencies += "com.google.code.findbugs" % "jsr305" % "1.3.+"
+
 assemblySettings
 
 mainClass in assembly := Some("WabbitTopology")
@@ -34,6 +36,7 @@ mergeStrategy in assembly <<= (mergeStrategy in assembly) { (old) =>
   {
     case PathList("javax", "servlet", xs @ _*) => MergeStrategy.first
     case PathList("project.clj") => MergeStrategy.first
+    case PathList("stylesheet.css") => MergeStrategy.first
     case x => old(x)
   }
 }

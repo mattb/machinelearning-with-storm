@@ -101,7 +101,7 @@ class Collocations extends StormBolt(outputFields = List()) {
   var count = 0
 
   setup { 
-    r = new Jedis("54.242.164.168", 6379) 
+    r = new Jedis("127.0.0.1", 6379) 
     model = new TokenizedLM(tokenizerFactory, 2)
   }
 
@@ -133,7 +133,7 @@ class Collocise extends StormBolt(outputFields = List("example")) {
   var collocations = Set[String]()
   var r: Jedis = _
   setup { 
-    r = new Jedis("54.242.164.168", 6379) 
+    r = new Jedis("127.0.0.1", 6379) 
     loadCollocations
   }
 
@@ -168,7 +168,7 @@ class RemoveRareWords extends StormBolt(outputFields = List("example")) {
   var rarewords: LoadingCache[String, java.lang.Boolean] = _
   var r: Jedis = _
   setup { 
-    r = new Jedis("54.242.164.168", 6379) 
+    r = new Jedis("127.0.0.1", 6379) 
     rarewords = CacheBuilder.newBuilder
       .expireAfterWrite(60, java.util.concurrent.TimeUnit.SECONDS)
       .maximumSize(1000000)
@@ -201,7 +201,7 @@ class RemoveRareWords extends StormBolt(outputFields = List("example")) {
 
 class TermFrequency extends StormBolt(outputFields = List()) {
   var r: Jedis = _
-  setup { r = new Jedis("54.242.164.168", 6379) }
+  setup { r = new Jedis("127.0.0.1", 6379) }
   def execute(t: Tuple) = t matchSeq {
     case Seq(example: Example) => example.tokens.groupBy(t => t).foreach { case(t, ts) => 
       r.zincrby("frequency:term", ts.size, t)
@@ -214,7 +214,7 @@ class TermFrequency extends StormBolt(outputFields = List()) {
 
 class Trainer extends StormBolt(outputFields = List("vwdata")) {
   var r: Jedis = _
-  setup { r = new Jedis("54.242.164.168", 6379) }
+  setup { r = new Jedis("127.0.0.1", 6379) }
   def execute(t: Tuple) = t matchSeq {
     case Seq(example: Example) => {
       val encoded = example.tokens.groupBy(token => token).map {
@@ -234,7 +234,7 @@ object WabbitTopology {
   def main(args: Array[String]) = {
     val builder = new TopologyBuilder
 
-    builder.setSpout("source", new RedisPubSubSpout("54.242.164.168", 6379, "text"), 1)
+    builder.setSpout("source", new RedisPubSubSpout("127.0.0.1", 6379, "text"), 1)
     builder.setBolt("parse", new ParseJson, 2).shuffleGrouping("source")
     builder.setBolt("lemmatise", new LemmatiseExample, 2).shuffleGrouping("parse")
     builder.setBolt("collocations", new Collocations, 2).shuffleGrouping("lemmatise")
@@ -247,9 +247,11 @@ object WabbitTopology {
     conf.setNumWorkers(20);
     conf.setMaxSpoutPending(5000);
     conf.setDebug(true)
-    conf.put(Config.TOPOLOGY_TICK_TUPLE_FREQ_SECS, new java.lang.Integer(60));
+    conf.put(Config.TOPOLOGY_TICK_TUPLE_FREQ_SECS, new java.lang.Integer(60))
+    conf.put(Config.TOPOLOGY_FALL_BACK_ON_JAVA_SERIALIZATION, new java.lang.Boolean(false))
 
-    //val cluster = new LocalCluster
-    backtype.storm.StormSubmitter.submitTopology("learning", conf, builder.createTopology)
+    val cluster = new LocalCluster
+    cluster.submitTopology("learning", conf, builder.createTopology)
+    // backtype.storm.StormSubmitter.submitTopology("learning", conf, builder.createTopology)
   }
 }
