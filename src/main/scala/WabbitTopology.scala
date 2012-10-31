@@ -1,3 +1,7 @@
+import java.io.BufferedReader
+import java.io.PrintWriter
+import java.lang.Process
+import java.lang.ProcessBuilder
 import backtype.storm.Config
 import backtype.storm.LocalCluster
 import backtype.storm.topology.TopologyBuilder
@@ -212,17 +216,61 @@ class TermFrequency extends StormBolt(outputFields = List()) {
   }
 }
 
-class Trainer extends StormBolt(outputFields = List("vwdata")) {
+class VWExampleEncoder extends StormBolt(outputFields = List("vwdata", "example")) {
   var r: Jedis = _
   setup { r = new Jedis("127.0.0.1", 6379) }
   def execute(t: Tuple) = t matchSeq {
     case Seq(example: Example) => {
-      val encoded = example.tokens.groupBy(token => token).map {
-        case (t, ts) => t + ":" + ts.size
+      if(example.tokens.size > 10) {
+        val encoded = example.tokens.groupBy(token => token).map {
+          case (t, ts) => t + ":" + ts.size
+        }
+        val output = List("'" + example.id + "|") ++ encoded
+        r.publish("vw", output.mkString(" "))
+        using anchor t emit (output.mkString(" "), example)
       }
-      val output = List("'" + example.id + "|") ++ encoded
-      using anchor t emit output.mkString(" ")
-      r.publish("vw", output.mkString(" "))
+    }
+    case _ => { // tick
+    }
+    t ack
+  }
+}
+
+class VWClassifierTrainer extends StormBolt(outputFields = List("example", "prediction")) {
+  var vw: Process = _
+  var fromVW: BufferedReader = _
+  var toVW: PrintWriter = _
+  var exampleCount = 0
+  setup { startNewModel }
+
+  def startNewModel = {
+    var options = List("-b", "20", "--loss_function", "logistic")
+    val filename = "politics.dat"
+
+    if(vw != null) {
+      vw.getOutputStream.close
+      vw.waitFor
+      options = options ++ List("-i", filename)
+    }
+
+    val builder = new ProcessBuilder((List("vw", "--quiet", "-f", filename) ++ options).asJava)
+    vw = builder.start
+    fromVW = new BufferedReader(new java.io.InputStreamReader(vw.getInputStream))
+    toVW = new PrintWriter(vw.getOutputStream, true)
+  }
+
+  def execute(t: Tuple) = t matchSeq {
+    case Seq(encodedExample: String, example: Example) => {
+      exampleCount += 1
+      val label = if(example.tags.exists(e => e.equals("politics/politics"))) {
+        "1"
+      } else {
+        "-1"
+      }
+      toVW.println(label + " " + encodedExample)
+      if(exampleCount % 2000 == 0) {
+        startNewModel
+      }
     }
     case _ => { // tick
     }
@@ -236,19 +284,19 @@ object WabbitTopology {
 
     builder.setSpout("source", new RedisPubSubSpout("127.0.0.1", 6379, "text"), 1)
     builder.setBolt("parse", new ParseJson, 2).shuffleGrouping("source")
-    builder.setBolt("lemmatise", new LemmatiseExample, 2).shuffleGrouping("parse")
+    builder.setBolt("lemmatise", new LemmatiseExample, 8).shuffleGrouping("parse")
     builder.setBolt("collocations", new Collocations, 2).shuffleGrouping("lemmatise")
     builder.setBolt("collocise", new Collocise, 2).shuffleGrouping("lemmatise")
     builder.setBolt("termfreq", new TermFrequency, 2).shuffleGrouping("collocise")
     builder.setBolt("rarewords", new RemoveRareWords, 2).shuffleGrouping("collocise")
-    builder.setBolt("trainer", new Trainer, 1).shuffleGrouping("rarewords")
+    builder.setBolt("vwencoder", new VWExampleEncoder, 1).shuffleGrouping("rarewords")
+    builder.setBolt("classifier", new VWClassifierTrainer, 1).shuffleGrouping("vwencoder")
 
     val conf = new Config
     conf.setNumWorkers(20);
     conf.setMaxSpoutPending(5000);
-    conf.setDebug(true)
+    conf.setDebug(false)
     conf.put(Config.TOPOLOGY_TICK_TUPLE_FREQ_SECS, new java.lang.Integer(60))
-    conf.put(Config.TOPOLOGY_FALL_BACK_ON_JAVA_SERIALIZATION, new java.lang.Boolean(false))
 
     val cluster = new LocalCluster
     cluster.submitTopology("learning", conf, builder.createTopology)
