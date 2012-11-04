@@ -29,24 +29,9 @@ import storm.scala.dsl._
 import yieldbot.storm.spout.RedisPubSubSpout
 import com.google.common.cache._
 
-case class Example(id: String, tokens: List[String], tags: Set[String]) {
-  def lemmatise = {
-    if(tokens.size > 1) {
-      this
-    } else {
-      this.copy(tokens=Example.lemmatise(tokens.head))
-    }
-  }
-}
+case class Example(id: String, tokens: List[String], tags: Set[String])
 
 object Example {
-  val punctuation = Set(".",",","``","''",":","(",")","#","$","'","\"", "-LRB-", "-RRB-")
-  lazy val stopwords = io.Source.fromFile(getClass.getResource("stopwords.txt").toURI.getPath).getLines.toSet
-  lazy val nlp = {
-    val config = new java.util.Properties
-    config.put("annotators", "tokenize, ssplit, pos, lemma")
-    new StanfordCoreNLP(config)
-  }
   val mapper = {
     val m = new ObjectMapper()
     m.getJsonFactory.disable(JsonFactory.Feature.INTERN_FIELD_NAMES).disable(JsonFactory.Feature.CANONICALIZE_FIELD_NAMES)
@@ -60,6 +45,30 @@ object Example {
     Example(data.path("id").textValue,
                 List(htmlToText(data.path("text").textValue)),
                 data.path("tags").elements.asScala.map { tag => tag.textValue }.toSet)
+  }
+}
+
+class ParseJson extends StormBolt(outputFields = List("example")) {
+  def execute(t: Tuple) = t matchSeq {
+    case Seq(json: String) => using anchor t emit Example.fromJson(json)
+    case _ => { // 
+    }
+    t ack
+  }
+}
+
+class LemmatiseExample extends StormBolt(outputFields = List("example")) {
+  val punctuation = Set(".",",","``","''",":","(",")","#","$","'","\"", "-LRB-", "-RRB-")
+  var stopwords: Set[String] = _
+  var nlp: StanfordCoreNLP = _
+
+  setup {
+    stopwords = io.Source.fromInputStream(getClass.getResourceAsStream("stopwords.txt")).getLines.toSet
+    nlp = {
+      val config = new java.util.Properties
+      config.put("annotators", "tokenize, ssplit, pos, lemma")
+      new StanfordCoreNLP(config)
+    }
   }
 
   def lemmatise(text: String) = {
@@ -78,20 +87,9 @@ object Example {
       }
     }.toList
   }
-}
 
-class ParseJson extends StormBolt(outputFields = List("example")) {
   def execute(t: Tuple) = t matchSeq {
-    case Seq(json: String) => using anchor t emit Example.fromJson(json)
-    case _ => { // 
-    }
-    t ack
-  }
-}
-
-class LemmatiseExample extends StormBolt(outputFields = List("example")) {
-  def execute(t: Tuple) = t matchSeq {
-    case Seq(example: Example) => using anchor t emit example.lemmatise
+    case Seq(example: Example) => using anchor t emit example.copy(tokens=lemmatise(example.tokens.head))
     case _ => { // tick
     }
     t ack
@@ -294,12 +292,10 @@ object WabbitTopology {
 
     val conf = new Config
     conf.setNumWorkers(20);
-    conf.setMaxSpoutPending(5000);
-    conf.setDebug(false)
     conf.put(Config.TOPOLOGY_TICK_TUPLE_FREQ_SECS, new java.lang.Integer(60))
 
-    val cluster = new LocalCluster
-    cluster.submitTopology("learning", conf, builder.createTopology)
-    // backtype.storm.StormSubmitter.submitTopology("learning", conf, builder.createTopology)
+    //val cluster = new LocalCluster
+    //cluster.submitTopology("learning", conf, builder.createTopology)
+    backtype.storm.StormSubmitter.submitTopology("learning", conf, builder.createTopology)
   }
 }
